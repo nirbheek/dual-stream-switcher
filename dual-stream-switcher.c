@@ -40,18 +40,22 @@ on_decodebin_pad_added (GstElement *decodebin,
     GstCaps *caps;
     GstPad *isink;
     GstElement *iselect;
-    char *name;
+    char *name, *selector_name;
 
     caps = gst_pad_query_caps (dsrc, NULL);
     name = gst_caps_to_string (caps);
 
-    if (!g_str_has_prefix (name, "video/x-raw"))
+    if (g_str_has_prefix (name, "video/x-raw"))
+        selector_name = "iselectv";
+    else if (g_str_has_prefix (name, "audio/x-raw"))
+        selector_name = "iselecta";
+    else
         goto meh;
     g_free (name);
 
     /* Get the correct output selector */
     name = gst_element_get_name (decodebin);
-    iselect = gst_bin_get_by_name (GST_BIN (pipeline), "iselect");
+    iselect = gst_bin_get_by_name (GST_BIN (pipeline), selector_name);
 
     /* Connect decodebin to input selector */
     isink = gst_element_get_request_pad (iselect, "sink_%u");
@@ -69,13 +73,11 @@ meh:
 }
 
 static void
-switch_playing_video (GstElement *pipeline)
+_switch_activepad (GstElement *iselect)
 {
     char *name;
-    GstElement *iselect;
     GstPad *sinkpad_old, *sinkpad_new;
 
-    iselect = gst_bin_get_by_name (GST_BIN (pipeline), "iselect");
     g_object_get (iselect, "active-pad", &sinkpad_old, NULL);
     name = gst_pad_get_name (sinkpad_old);
 
@@ -88,8 +90,23 @@ switch_playing_video (GstElement *pipeline)
 
     gst_object_unref (sinkpad_old);
     gst_object_unref (sinkpad_new);
-    gst_object_unref (iselect);
     g_free (name);
+}
+
+static void
+switch_playing_video (GstElement *pipeline)
+{
+    GstElement *iselect;
+
+    /* Switch video pads */
+    iselect = gst_bin_get_by_name (GST_BIN (pipeline), "iselectv");
+    _switch_activepad (iselect);
+    gst_object_unref (iselect);
+
+    /* Switch audio pads */
+    iselect = gst_bin_get_by_name (GST_BIN (pipeline), "iselecta");
+    _switch_activepad (iselect);
+    gst_object_unref (iselect);
 }
 
 static gboolean
@@ -135,7 +152,7 @@ main (int   argc,
     GIOChannel *channel;
     char *f0, *f1;
     GstElement *pipeline, *src0, *src1, *d0, *d1;
-    GstElement *iselect, *sink;
+    GstElement *iselectv, *iselecta, *vsink, *asink;
 
     gst_init (&argc, &argv);
 
@@ -159,17 +176,24 @@ main (int   argc,
     d0 = gst_element_factory_make ("decodebin", "0");
     d1 = gst_element_factory_make ("decodebin", "1");
 
-    iselect = gst_element_factory_make ("input-selector", "iselect");
-    g_object_set (iselect,
+    iselectv = gst_element_factory_make ("input-selector", "iselectv");
+    g_object_set (iselectv,
+                  "cache-buffers", TRUE,
+                  "sync-streams", TRUE,
+                  NULL);
+    iselecta = gst_element_factory_make ("input-selector", "iselecta");
+    g_object_set (iselecta,
                   "cache-buffers", TRUE,
                   "sync-streams", TRUE,
                   NULL);
 
-    sink = gst_element_factory_make ("glimagesink", "videosink");
+    vsink = gst_element_factory_make ("glimagesink", "videosink");
+    asink = gst_element_factory_make ("autoaudiosink", "audiosink");
 
     gst_bin_add_many (GST_BIN (pipeline), src0, src1, d0, d1,
-                      iselect, sink, NULL);
-    gst_element_link (iselect, sink);
+                      iselectv, iselecta, vsink, asink, NULL);
+    gst_element_link (iselectv, vsink);
+    gst_element_link (iselecta, asink);
     gst_element_link (src0, d0);
     gst_element_link (src1, d1);
 
