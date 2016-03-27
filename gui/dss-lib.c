@@ -20,8 +20,8 @@
 
 #include "dss-lib.h"
 
-#define VIDEO_SELECTOR "iselectv"
-#define AUDIO_SELECTOR "iselecta"
+#define VIDEO_MIXER "compositor"
+#define AUDIO_MIXER "audiomixer"
 
 #define VIDEO_SINK_NAME "videosink"
 #define AUDIO_SINK_NAME "audiosink"
@@ -30,76 +30,137 @@ static void
 on_decodebin_pad_added (GstElement * decodebin, GstPad * dsrc,
     GstElement * pipeline)
 {
+  GstPad *sink;
   GstCaps *caps;
-  GstPad *isink;
-  GstElement *iselect;
-  char *name, *selector_name;
+  GstElement *mixer;
+  const gchar *name;
+  gchar *element_name;
 
   caps = gst_pad_query_caps (dsrc, NULL);
-  name = gst_caps_to_string (caps);
+  name = gst_structure_get_name (gst_caps_get_structure (caps, 0));
 
-  if (g_str_has_prefix (name, "video/x-raw"))
-    selector_name = VIDEO_SELECTOR;
-  else if (g_str_has_prefix (name, "audio/x-raw"))
-    selector_name = AUDIO_SELECTOR;
+  if (g_strcmp0 (name, "video/x-raw") == 0)
+    goto video;
+  else if (g_strcmp0 (name, "audio/x-raw") == 0)
+    goto audio;
   else
     goto meh;
-  g_free (name);
 
-  /* Get the correct output selector */
-  name = gst_element_get_name (decodebin);
-  iselect = gst_bin_get_by_name (GST_BIN (pipeline), selector_name);
-
+video:
+  /* Get the correct mixer */
+  mixer = gst_bin_get_by_name (GST_BIN (pipeline), VIDEO_MIXER);
+  sink = gst_element_get_request_pad (mixer, "sink_%u");
   /* Connect decodebin to input selector */
-  isink = gst_element_get_request_pad (iselect, "sink_%u");
-  g_object_set (isink, "always-ok", TRUE, NULL);
-  gst_pad_link (dsrc, isink);
+  gst_pad_link (dsrc, sink);
+  /* Mute */
+  element_name = gst_element_get_name (decodebin);
+  if (g_strcmp0 (element_name, "1") == 0)
+    g_object_set (sink, "alpha", 0.0, NULL);
 
-  if (g_strcmp0 (name, "0") == 0)
-    g_object_set (iselect, "active-pad", isink, NULL);
+  goto done;
 
-  gst_object_unref (isink);
-  gst_object_unref (iselect);
+audio:
+  /* Get the correct mixer */
+  mixer = gst_bin_get_by_name (GST_BIN (pipeline), AUDIO_MIXER);
+  sink = gst_element_get_request_pad (mixer, "sink_%u");
+  /* Connect decodebin to input selector */
+  gst_pad_link (dsrc, sink);
+  /* Mute */
+  element_name = gst_element_get_name (decodebin);
+  if (g_strcmp0 (element_name, "1") == 0)
+    g_object_set (sink, "mute", TRUE, NULL);
+
+done:
+  gst_object_unref (sink);
+  gst_object_unref (mixer);
+  g_free (element_name);
 meh:
   gst_caps_unref (caps);
-  g_free (name);
+}
+
+static gboolean
+dss_mixer_get_two_pads (GstElement * mixer, GstPad ** pad0, GstPad ** pad1)
+{
+  GstIterator *iter;
+  GValue sinkpad = G_VALUE_INIT;
+
+  iter = gst_element_iterate_sink_pads (mixer);
+  /* Get first sinkpad */
+  if (gst_iterator_next (iter, &sinkpad) != GST_ITERATOR_OK) {
+    g_critical ("Unable to iterate #1 on audiomixer");
+    return FALSE;
+  }
+  *pad0 = g_value_get_object (&sinkpad);
+
+  /* Get second sinkpad */
+  g_value_reset (&sinkpad);
+  if (gst_iterator_next (iter, &sinkpad) != GST_ITERATOR_OK) {
+    g_critical ("Unable to iterate #2 on audiomixer");
+    return FALSE;
+  }
+  *pad1 = g_value_get_object (&sinkpad);
+
+  /* Done */
+  g_value_reset (&sinkpad);
+  if (gst_iterator_next (iter, &sinkpad) != GST_ITERATOR_DONE)
+    g_warning ("Too many pads on audiomixer");
+  g_value_unset (&sinkpad);
+  gst_iterator_free (iter);
+  return TRUE;
 }
 
 static void
-_switch_activepad (GstElement * iselect)
+dss_videomixer_switch_muted_pads (GstElement * mixer)
 {
-  char *name;
-  GstPad *sinkpad_old, *sinkpad_new;
+  gdouble alpha;
+  GstPad *sinkpad0, *sinkpad1;
 
-  g_object_get (iselect, "active-pad", &sinkpad_old, NULL);
-  name = gst_pad_get_name (sinkpad_old);
+  if (!dss_mixer_get_two_pads (mixer, &sinkpad0, &sinkpad1))
+    return;
 
-  if (g_strcmp0 (name, "sink_0") == 0)
-    sinkpad_new = gst_element_get_static_pad (iselect, "sink_1");
-  else
-    sinkpad_new = gst_element_get_static_pad (iselect, "sink_0");
+  g_object_get (sinkpad0, "alpha", &alpha, NULL);
+  if (alpha > 0.0) {
+    g_object_set (sinkpad0, "alpha", 0.0, NULL);
+    g_object_set (sinkpad1, "alpha", 1.0, NULL);
+  } else {
+    g_object_set (sinkpad0, "alpha", 1.0, NULL);
+    g_object_set (sinkpad1, "alpha", 0.0, NULL);
+  }
+}
 
-  g_object_set (iselect, "active-pad", sinkpad_new, NULL);
+static void
+dss_audiomixer_switch_muted_pads (GstElement * mixer)
+{
+  gboolean muted;
+  GstPad *sinkpad0, *sinkpad1;
 
-  gst_object_unref (sinkpad_old);
-  gst_object_unref (sinkpad_new);
-  g_free (name);
+  if (!dss_mixer_get_two_pads (mixer, &sinkpad0, &sinkpad1))
+    return;
+
+  g_object_get (sinkpad0, "mute", &muted, NULL);
+  if (muted) {
+    g_object_set (sinkpad0, "mute", FALSE, NULL);
+    g_object_set (sinkpad1, "mute", TRUE, NULL);
+  } else {
+    g_object_set (sinkpad0, "mute", TRUE, NULL);
+    g_object_set (sinkpad1, "mute", FALSE, NULL);
+  }
 }
 
 gboolean
 dss_pipeline_toggle_video (GstElement * pipeline)
 {
-  GstElement *iselect;
+  GstElement *mixer;
 
   /* Switch video pads */
-  iselect = gst_bin_get_by_name (GST_BIN (pipeline), VIDEO_SELECTOR);
-  _switch_activepad (iselect);
-  gst_object_unref (iselect);
+  mixer = gst_bin_get_by_name (GST_BIN (pipeline), VIDEO_MIXER);
+  dss_videomixer_switch_muted_pads (mixer);
+  gst_object_unref (mixer);
 
   /* Switch audio pads */
-  iselect = gst_bin_get_by_name (GST_BIN (pipeline), AUDIO_SELECTOR);
-  _switch_activepad (iselect);
-  gst_object_unref (iselect);
+  mixer = gst_bin_get_by_name (GST_BIN (pipeline), AUDIO_MIXER);
+  dss_audiomixer_switch_muted_pads (mixer);
+  gst_object_unref (mixer);
 
   return TRUE;
 }
@@ -110,7 +171,7 @@ dss_pipeline_new (GFile * file0, GFile * file1, GtkWidget ** out_video_widget)
 {
   gchar *uri0, *uri1;
   GstElement *p, *d0, *d1;
-  GstElement *isv, *isa, *vconv, *aconv, *vsink, *asink;
+  GstElement *vmix, *amix, *vsink, *asink;
 
   p = gst_pipeline_new ("DSS");
 
@@ -124,13 +185,9 @@ dss_pipeline_new (GFile * file0, GFile * file1, GtkWidget ** out_video_widget)
   g_object_set (d1, "uri", uri1, NULL);
   g_free (uri1);
 
-  isv = gst_element_factory_make ("input-selector", VIDEO_SELECTOR);
-  g_object_set (isv, "cache-buffers", TRUE, "sync-streams", TRUE, NULL);
-  isa = gst_element_factory_make ("input-selector", AUDIO_SELECTOR);
-  g_object_set (isa, "cache-buffers", TRUE, "sync-streams", TRUE, NULL);
-
-  vconv = gst_element_factory_make ("videoconvert", NULL);
-  aconv = gst_element_factory_make ("audioconvert", NULL);
+  vmix = gst_element_factory_make ("compositor", VIDEO_MIXER);
+  g_object_set (vmix, "background", 1, NULL);
+  amix = gst_element_factory_make ("audiomixer", AUDIO_MIXER);
 
   vsink = gst_element_factory_make ("gtksink", VIDEO_SINK_NAME);
   if (!vsink) {
@@ -139,10 +196,9 @@ dss_pipeline_new (GFile * file0, GFile * file1, GtkWidget ** out_video_widget)
   }
   asink = gst_element_factory_make ("autoaudiosink", AUDIO_SINK_NAME);
 
-  gst_bin_add_many (GST_BIN (p), d0, d1, isv, isa, vconv, aconv, vsink, asink,
-      NULL);
-  gst_element_link_many (isv, vconv, vsink, NULL);
-  gst_element_link_many (isa, aconv, asink, NULL);
+  gst_bin_add_many (GST_BIN (p), d0, d1, vmix, amix, vsink, asink, NULL);
+  gst_element_link_many (vmix, vsink, NULL);
+  gst_element_link_many (amix, asink, NULL);
 
   g_signal_connect (d0, "pad-added", G_CALLBACK (on_decodebin_pad_added), p);
   g_signal_connect (d1, "pad-added", G_CALLBACK (on_decodebin_pad_added), p);
@@ -154,7 +210,7 @@ fail:
   g_object_unref (p);
   g_object_unref (d0);
   g_object_unref (d1);
-  g_object_unref (isv);
-  g_object_unref (isa);
+  g_object_unref (vmix);
+  g_object_unref (amix);
   return NULL;
 }
