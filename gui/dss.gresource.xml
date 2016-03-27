@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+	<gresource prefix="/org/gtk/DualStreamSwitcher">
+		<file preprocess="xml-stripblanks">dss-window.ui</file>
+		<file preprocess="xml-stripblanks">dss-appmenu.ui</file>
+  </gresource>
+</gresources>
