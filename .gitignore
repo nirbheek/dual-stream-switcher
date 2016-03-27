@@ -1,5 +1,5 @@
 *.swp
 *~
 *.o
-dual-stream-switcher
 *.mp4
+/build/
