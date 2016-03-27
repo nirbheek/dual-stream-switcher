@@ -1,8 +1,13 @@
 Intro
 =====
-Dual Stream Switcher is a sample project that uses GStreamer to switch between
-two files when a key is pressed. GTK+ is used for rendering the video and for
-event handling.
+Dual Stream Switcher is a sample project that uses
+[GStreamer](http://gstreamer.freedesktop.org/) to switch between
+two files when a key is pressed. [GTK+](http://www.gtk.org/) is used for
+rendering the video and for event handling.
+
+[Meson](https://github.com/mesonbuild/meson/) is used for building, and since
+GStreamer and GTK+ are cross-platform, this means this can be built and run on
+Linux, OS X, and Windows.
 
 Building and running:
 =====================
